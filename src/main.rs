@@ -1,13 +1,14 @@
 extern crate sdl2;
 
+use extend::ext;
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::Color;
 use sdl2::rect::Point;
 use std::time::{Duration, Instant};
 
-const LOGICAL_SCREEN_HEIGHT: u16 = 9;
-const LOGICAL_SCREEN_WIDTH: u16 = 16;
+const LOGICAL_SCREEN_HEIGHT: u16 = 1080;
+const LOGICAL_SCREEN_WIDTH: u16 = 1920;
 const PHYSICAL_SCREEN_HEIGHT: u16 = 1080;
 const PHYSICAL_SCREEN_WIDTH: u16 = 1920;
 
@@ -17,7 +18,7 @@ use std::f64::consts::PI;
 const DOF: f64 = 20.0;
 
 const MOVE_SPEED: f64 = 0.02;
-const TURN_SPEED: f64 = 0.02;
+const TURN_SPEED: f64 = 0.002;
 
 #[derive(Clone, Copy)]
 enum Wall {
@@ -30,6 +31,8 @@ struct Player {
     y: f64,
     angle: f64,
 }
+
+#[derive(Clone, Copy)]
 struct Vec2 {
     x: f64,
     y: f64,
@@ -37,6 +40,34 @@ struct Vec2 {
 impl Vec2 {
     fn get_length(&self) -> f64 {
         return self.x.hypot(self.y);
+    }
+}
+impl std::ops::Sub for Vec2 {
+    type Output = Self;
+
+    fn sub(self, other: Self) -> Self::Output {
+        Self {
+            x: self.x - other.x,
+            y: self.y - other.y,
+        }
+    }
+}
+#[ext]
+impl [[Wall; 10]; 10] {
+    fn is_wall_at_position(&self, position: Vec2) -> bool {
+        if !(position.x > 0.0 && position.x < 10.0 && position.y > 0.0 && position.y < 10.0) {
+            return false;
+        }
+        let first_index: usize = position.y.trunc() as usize;
+        let second_index: usize = position.x.trunc() as usize;
+        //println!("index: {}, {}", first_index, second_index);
+        match self[first_index][second_index] {
+            Wall::Empty => return false,
+            Wall::Wall => {
+                println!("{} | {}", position.x, position.y);
+                return true;
+            }
+        }
     }
 }
 
@@ -58,94 +89,90 @@ impl RayCaster {
         };
     }
     fn cast(&mut self, map: [[Wall; 10]; 10]) -> f64 {
-        let mut cast_position = Vec2 {
-            x: self.x,
-            y: self.y,
-        };
+        self.angle = angle_to_normal_range(self.angle);
+        let mut cast_position = Vec2 { x: 0.0, y: 0.0 };
 
         let tan: f64 = self.angle.tan();
         let cot: f64 = 1.0 / tan;
 
-        let mut vertical_total = Vec2 { x: 0.0, y: 0.0 };
         let mut direction_coefficient: f64;
-        if self.angle < PI && self.angle > 0.0 {
+        if self.angle < PI && self.angle >= 0.0 {
             direction_coefficient = -1.0;
-            vertical_total.y = self.y_offset;
-            vertical_total.x = vertical_total.y * tan;
+            //cast_position.y = self.y.trunc();
+            //cast_position.x = self.x.trunc() - cot * self.y_offset;
         } else {
-            direction_coefficient = 1.0;
-            vertical_total.y = self.y_offset;
-            vertical_total.x = (1.0 - vertical_total.y) * tan;
+            direction_coefficient = -1.0;
+            //cast_position.y = self.y.trunc() + 1.0;
+            //cast_position.x = self.x.trunc() + 1.0 - cot * self.y_offset;
         }
-        'vertical_cast: loop {
-            if cast_position.x > 0.0
-                && cast_position.x < 10.0
-                && cast_position.y > 0.0
-                && cast_position.y < 10.0
-            {
-                let first_index: usize = cast_position.y.trunc() as usize;
-                let second_index: usize = cast_position.x.trunc() as usize;
-                //println!("index: {}, {}", first_index, second_index);
-                match map[first_index][second_index] {
-                    Wall::Empty => break,
-                    Wall::Wall => {
-                        println!("{} | {}", cast_position.x, cast_position.y);
-                        break 'vertical_cast;
-                    }
-                }
+        let vertical_cast_length_offset = (cast_position
+            - Vec2 {
+                x: self.x,
+                y: self.y,
+            })
+        .get_length()
+            * direction_coefficient;
+        cast_position.x = self.x;
+        cast_position.y = self.y;
+        let vertical_cast_length = 'vertical_cast: loop {
+            if map.is_wall_at_position(cast_position) {
+                break 'vertical_cast (cast_position
+                    - Vec2 {
+                        x: self.x,
+                        y: self.y,
+                    })
+                .get_length();
             }
             if cast_position.x.is_nan()
                 || cast_position.y.is_nan()
                 || (cast_position).get_length() > DOF
             {
-                vertical_total.y = DOF;
-                vertical_total.x = 0.0;
-                break;
+                //println!("{} | {}", cast_position.x, cast_position.y);
+                break DOF;
             }
-
-            cast_position.y += -1.0 * direction_coefficient;
-            cast_position.x += tan;
-        }
-        let mut horizontal_total = Vec2 { x: 0.0, y: 0.0 };
-        if self.angle < 1.5 * PI && self.angle > 0.0 {
+            cast_position.y -= 1.0 * direction_coefficient;
+            cast_position.x += cot;
+        }; //- vertical_cast_length_offset;
+        if self.angle < 1.5 * PI && self.angle >= 0.5 * PI {
             direction_coefficient = -1.0;
-            horizontal_total.x = self.x_offset;
-            horizontal_total.y = horizontal_total.x * cot;
+            //cast_position.x = self.x.trunc();
+            //cast_position.y = self.y.trunc() + tan * self.x_offset;
         } else {
-            direction_coefficient = 1.0;
-            horizontal_total.x = self.x_offset;
-            horizontal_total.y = (1.0 - horizontal_total.x) * cot;
+            direction_coefficient = -1.0;
+            //cast_position.x = self.x.trunc() + 1.0;
+            //cast_position.y = self.y.trunc() + 1.0 + tan * self.x_offset;
         }
-
-        /*
-        'horizontal_cast: loop {
-            if cast_position.x > 0.0 && cast_position.x < 10.0 && cast_position.y > 0.0 && cast_position.y < 10.0 {
-                let first_index: usize = cast_position.y.trunc() as usize;
-                let second_index: usize = cast_position.x.trunc() as usize;
-                match map[first_index][second_index] {
-                    Wall::Empty => break,
-                    Wall::Wall => {
-                        break 'horizontal_cast;
-                    }
-                }
+        let horizontal_cast_length_offset = (cast_position
+            - Vec2 {
+                x: self.x,
+                y: self.y,
+            })
+        .get_length()
+            * direction_coefficient;
+        cast_position.x = self.x;
+        cast_position.y = self.y;
+        let horizontal_cast_length = 'horizontal_cast: loop {
+            if map.is_wall_at_position(cast_position) {
+                break 'horizontal_cast (cast_position
+                    - Vec2 {
+                        x: self.x,
+                        y: self.y,
+                    })
+                .get_length();
             }
-            if horizontal_total.x.is_nan()
-                || horizontal_total.y.is_nan()
-                || horizontal_total.get_length() > DOF
+            if cast_position.x.is_nan()
+                || cast_position.y.is_nan()
+                || (cast_position).get_length() > DOF
             {
-                horizontal_total.y = DOF;
-                horizontal_total.x = 0;
-                break;
+                //println!("{} | {}", cast_position.x, cast_position.y);
+                break DOF;
             }
 
-            cast_position.y += -1*direction_coefficient;
-            cast_position.x += tan;
-        }*/
-        horizontal_total.x = DOF;
-        horizontal_total.y = 0.0;
-        return vertical_total
-            .get_length()
-            .min(horizontal_total.get_length());
+            cast_position.x -= 1.0 * direction_coefficient;
+            cast_position.y += tan;
+        }; //- horizontal_cast_length_offset;
+
+        return vertical_cast_length.min(horizontal_cast_length);
     }
 }
 
@@ -174,7 +201,7 @@ fn main() {
     let mut player = Player {
         x: 5.0,
         y: 5.0,
-        angle: 6.0,
+        angle: 0.0 * DEGREES_IN_RADIANS,
     };
 
     let mut frames_delta_time: Duration = Duration::from_millis(10);
@@ -254,7 +281,6 @@ fn main() {
                     key_d_down = false;
                     break;
                 }
-
                 _ => {}
             }
         }
@@ -285,11 +311,13 @@ fn main() {
         let delta_radians_per_iteration = (FOV * DEGREES_IN_RADIANS) / LOGICAL_SCREEN_WIDTH as f64;
         for i in 0..LOGICAL_SCREEN_WIDTH {
             let mut distance = ray_caster.cast(map);
-            if distance < 1.0 {
-                distance = 1.0;
+            //println!("{}", distance);
+            if distance < 2.0 {
+                distance = 2.0;
             }
+            distance *= (player.angle - ray_caster.angle).cos();
             let height: u16 = (LOGICAL_SCREEN_HEIGHT as f64 / distance).round() as u16;
-            let brightness = (1.0 / (distance).powi(1) * 255.0).round() as u8;
+            let brightness = (1.0 / (distance / 2.0).powi(2) * 255.0).round() as u8;
             canvas.set_draw_color(Color::RGB(brightness, brightness, brightness));
 
             canvas
@@ -305,14 +333,15 @@ fn main() {
 
         canvas.present();
         frames_delta_time = now.elapsed();
-        /*println!("distance: {}", RayCaster::from_player(&player).cast(map));
+        println!("_______________________________________________________");
+        println!("distance: {}", RayCaster::from_player(&player).cast(map));
         println!(
-            "x:{}, y:{} | angle:{} | delta_time (microseconds): {}",
+            "x:{}, y:{} | angle:{} | delta_time (micros): {}",
             player.x,
             player.y,
             player.angle,
             frames_delta_time.as_micros()
-        );*/
+        );
     }
 }
 fn angle_to_normal_range(input_angle: f64) -> f64 {
