@@ -13,14 +13,14 @@ const PHYSICAL_SCREEN_HEIGHT: u16 = 1080;
 const PHYSICAL_SCREEN_WIDTH: u16 = 1920;
 
 const DEGREES_IN_RADIANS: f64 = 0.0174533;
-const FOV: f64 = 90.0 * DEGREES_IN_RADIANS;
+const FOV: f64 = 100.0;
 use std::f64::consts::PI;
 const DOF: f64 = 20.0;
 
-const MOVE_SPEED: f64 = 0.02;
-const TURN_SPEED: f64 = 0.002;
+const MOVE_SPEED: f64 = 0.03;
+const TURN_SPEED: f64 = 0.05;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Wall {
     Empty,
     Wall,
@@ -52,6 +52,16 @@ impl std::ops::Sub for Vec2 {
         }
     }
 }
+impl std::ops::Add for Vec2 {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self::Output {
+        Self {
+            x: self.x + other.x,
+            y: self.y + other.y,
+        }
+    }
+}
 #[ext]
 impl [[Wall; 10]; 10] {
     fn is_wall_at_position(&self, position: Vec2) -> bool {
@@ -75,8 +85,6 @@ struct RayCaster {
     x: f64,
     y: f64,
     angle: f64,
-    x_offset: f64,
-    y_offset: f64,
 }
 impl RayCaster {
     fn from_player(player: &Player) -> RayCaster {
@@ -84,95 +92,72 @@ impl RayCaster {
             x: player.x,
             y: player.y,
             angle: player.angle,
-            x_offset: player.x.fract().abs(),
-            y_offset: player.y.fract().abs(),
         };
     }
-    fn cast(&mut self, map: [[Wall; 10]; 10]) -> f64 {
-        self.angle = angle_to_normal_range(self.angle);
-        let mut cast_position = Vec2 { x: 0.0, y: 0.0 };
+    fn cast(&self, map: [[Wall; 10]; 10]) -> f64 {
+        //NaN needs to be handled
+        let angle = angle_to_normal_range(self.angle);
+        let sin: f64 = angle.sin();
+        let cos: f64 = angle.cos();
 
-        let tan: f64 = self.angle.tan();
-        let cot: f64 = 1.0 / tan;
+        //println!("{} | {}, {}", angle, sin, cos);
 
-        let mut direction_coefficient: f64;
-        if self.angle < PI && self.angle >= 0.0 {
-            direction_coefficient = -1.0;
-            //cast_position.y = self.y.trunc();
-            //cast_position.x = self.x.trunc() - cot * self.y_offset;
-        } else {
-            direction_coefficient = -1.0;
-            //cast_position.y = self.y.trunc() + 1.0;
-            //cast_position.x = self.x.trunc() + 1.0 - cot * self.y_offset;
+        let step_total_delta = Vec2 {
+            x: (1.0 / cos).abs(),
+            y: (1.0 / sin).abs(),
+        };
+        let direction_coefficient = Vec2 {
+            x: {
+                if angle < PI * 1.5 && angle > PI * 0.5 {
+                    -1.0
+                } else {
+                    1.0
+                }
+            },
+            y: {
+                if angle < PI && angle > 0.0 {
+                    -1.0
+                } else {
+                    1.0
+                }
+            },
+        };
+        let mut delta_needed_for_next_tile = Vec2 {
+            x: ((0.5 + 0.5 * direction_coefficient.x) - self.x.fract() * direction_coefficient.x)
+                * step_total_delta.x,
+            y: ((0.5 + 0.5 * direction_coefficient.y) - self.y.fract() * direction_coefficient.y)
+                * step_total_delta.y,
+        };
+        let mut current_tile = Vec2 {
+            x: (self.x + 0.0 * (direction_coefficient.x * 0.5 + 0.5)).trunc(),
+            y: (self.y + 0.0 * (direction_coefficient.y * 0.5 + 0.5)).trunc(),
+        };
+        let mut travelled_distance = 0.0;
+
+        loop {
+            if delta_needed_for_next_tile.x < delta_needed_for_next_tile.y {
+                delta_needed_for_next_tile.y -= delta_needed_for_next_tile.x;
+                travelled_distance += delta_needed_for_next_tile.x.abs();
+                delta_needed_for_next_tile.x = step_total_delta.x;
+                current_tile.x += direction_coefficient.x;
+            } else {
+                delta_needed_for_next_tile.x -= delta_needed_for_next_tile.y;
+                travelled_distance += delta_needed_for_next_tile.y.abs();
+                delta_needed_for_next_tile.y = step_total_delta.y;
+                current_tile.y += direction_coefficient.y;
+            }
+
+            if travelled_distance > DOF {
+                return DOF;
+            }
+            let index_x: isize = current_tile.x as isize;
+            let index_y: isize = current_tile.y as isize;
+            if !(index_x < 0 || index_x > 9 || index_y < 0 || index_y > 9) {
+                if map[index_x as usize][index_y as usize] == Wall::Wall {
+                    return travelled_distance;
+                }
+            }
         }
-        let vertical_cast_length_offset = (cast_position
-            - Vec2 {
-                x: self.x,
-                y: self.y,
-            })
-        .get_length()
-            * direction_coefficient;
-        cast_position.x = self.x;
-        cast_position.y = self.y;
-        let vertical_cast_length = 'vertical_cast: loop {
-            if map.is_wall_at_position(cast_position) {
-                break 'vertical_cast (cast_position
-                    - Vec2 {
-                        x: self.x,
-                        y: self.y,
-                    })
-                .get_length();
-            }
-            if cast_position.x.is_nan()
-                || cast_position.y.is_nan()
-                || (cast_position).get_length() > DOF
-            {
-                //println!("{} | {}", cast_position.x, cast_position.y);
-                break DOF;
-            }
-            cast_position.y -= 1.0 * direction_coefficient;
-            cast_position.x += cot;
-        }; //- vertical_cast_length_offset;
-        if self.angle < 1.5 * PI && self.angle >= 0.5 * PI {
-            direction_coefficient = -1.0;
-            //cast_position.x = self.x.trunc();
-            //cast_position.y = self.y.trunc() + tan * self.x_offset;
-        } else {
-            direction_coefficient = -1.0;
-            //cast_position.x = self.x.trunc() + 1.0;
-            //cast_position.y = self.y.trunc() + 1.0 + tan * self.x_offset;
-        }
-        let horizontal_cast_length_offset = (cast_position
-            - Vec2 {
-                x: self.x,
-                y: self.y,
-            })
-        .get_length()
-            * direction_coefficient;
-        cast_position.x = self.x;
-        cast_position.y = self.y;
-        let horizontal_cast_length = 'horizontal_cast: loop {
-            if map.is_wall_at_position(cast_position) {
-                break 'horizontal_cast (cast_position
-                    - Vec2 {
-                        x: self.x,
-                        y: self.y,
-                    })
-                .get_length();
-            }
-            if cast_position.x.is_nan()
-                || cast_position.y.is_nan()
-                || (cast_position).get_length() > DOF
-            {
-                //println!("{} | {}", cast_position.x, cast_position.y);
-                break DOF;
-            }
-
-            cast_position.x -= 1.0 * direction_coefficient;
-            cast_position.y += tan;
-        }; //- horizontal_cast_length_offset;
-
-        return vertical_cast_length.min(horizontal_cast_length);
     }
 }
 
@@ -213,6 +198,10 @@ fn main() {
             }
         }
     }
+    map[3][2] = Wall::Wall;
+    map[3][1] = Wall::Wall;
+    map[1][1] = Wall::Wall;
+    map[6][7] = Wall::Wall;
 
     'game_loop: loop {
         let now = Instant::now();
@@ -311,19 +300,18 @@ fn main() {
         let delta_radians_per_iteration = (FOV * DEGREES_IN_RADIANS) / LOGICAL_SCREEN_WIDTH as f64;
         for i in 0..LOGICAL_SCREEN_WIDTH {
             let mut distance = ray_caster.cast(map);
-            //println!("{}", distance);
-            if distance < 2.0 {
-                distance = 2.0;
+            if distance < 1.0 {
+                distance = 1.0;
             }
-            distance *= (player.angle - ray_caster.angle).cos();
+            //distance *= (player.angle - ray_caster.angle).cos();
             let height: u16 = (LOGICAL_SCREEN_HEIGHT as f64 / distance).round() as u16;
             let brightness = (1.0 / (distance / 2.0).powi(2) * 255.0).round() as u8;
             canvas.set_draw_color(Color::RGB(brightness, brightness, brightness));
 
             canvas
                 .draw_line(
-                    Point::new(i as i32, ((LOGICAL_SCREEN_HEIGHT + height) / 2) as i32),
-                    Point::new(i as i32, ((LOGICAL_SCREEN_HEIGHT - height) / 2) as i32),
+                    Point::new(i as i32, (LOGICAL_SCREEN_HEIGHT / 2 + height / 2) as i32),
+                    Point::new(i as i32, (LOGICAL_SCREEN_HEIGHT / 2 - height / 2) as i32),
                 )
                 .unwrap();
 
@@ -356,4 +344,57 @@ fn angle_to_normal_range(input_angle: f64) -> f64 {
         }
     }
     return angle;
+}
+
+#[test]
+fn cast_test() {
+    let mut map: [[Wall; 10]; 10] = [[Wall::Empty; 10]; 10];
+    for i in 0..10 {
+        for j in 0..10 {
+            if j == 0 || i == 0 || j == 9 || i == 9 {
+                map[i][j] = Wall::Wall;
+            }
+        }
+    }
+    let mut caster = RayCaster {
+        x: 2.0,
+        y: 6.0,
+        angle: 0.0,
+    };
+    let distance = caster.cast(map);
+    println!("{} | expected : 7.0", distance);
+    assert!(distance == 7.0);
+    caster.angle = PI * 0.5;
+    let distance = caster.cast(map);
+    println!("{} | expected : 5.0", distance);
+    assert!(distance == 5.0);
+    caster.angle = PI;
+    let distance = caster.cast(map);
+    println!("{} | expected : 1.0", distance);
+    assert!(distance == 1.0);
+    caster.angle = 1.5 * PI;
+    let distance = caster.cast(map);
+    println!("{} | expected : 3.0", distance);
+    assert!(distance == 3.0);
+    caster = RayCaster {
+        x: 6.4,
+        y: 3.7,
+        angle: 0.0,
+    };
+    let distance = caster.cast(map);
+    println!("{} | expected : 2.6", distance);
+    //assert!(distance == 2.6);
+    caster.angle = PI * 0.5;
+    let distance = caster.cast(map);
+    println!("{} | expected : 2.7", distance);
+    //assert!(distance == 2.7);
+    caster.angle = PI;
+    let distance = caster.cast(map);
+    println!("{} | expected : 5.4", distance);
+    //assert!(distance == 5.4);
+    caster.angle = 1.5 * PI;
+    let distance = caster.cast(map);
+    println!("{} | expected : 5.3", distance);
+    //assert!(distance == 5.3);
+    assert!(false);
 }
